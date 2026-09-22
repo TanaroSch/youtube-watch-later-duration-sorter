@@ -49,6 +49,59 @@ function parseDuration(timeStr) {
   return parts[0] || 0;
 }
 
+const AGE_UNITS_MS = {
+  second: 1000,
+  minute: 60 * 1000,
+  hour: 60 * 60 * 1000,
+  day: 24 * 60 * 60 * 1000,
+  week: 7 * 24 * 60 * 60 * 1000,
+  month: 30 * 24 * 60 * 60 * 1000,
+  year: 365 * 24 * 60 * 60 * 1000
+};
+
+const GERMAN_AGE_UNITS = {
+  sekunde: "second",
+  minute: "minute",
+  stunde: "hour",
+  tag: "day",
+  woche: "week",
+  monat: "month",
+  jahr: "year"
+};
+
+// Parses YouTube's relative upload date ("3 days ago", "vor 3 Tagen") into an
+// age in milliseconds. Returns null when no upload date is recognizable.
+function parseUploadAge(text) {
+  const value = normalizeText(text);
+
+  const english = value.match(/\b(\d+|an?)\s+(second|minute|hour|day|week|month|year)s?\s+ago\b/);
+  if (english) {
+    const amount = /^\d+$/.test(english[1]) ? Number(english[1]) : 1;
+    return amount * AGE_UNITS_MS[english[2]];
+  }
+
+  const german = value.match(/\bvor\s+(\d+|einer|einem|eine)\s+(sekunde|minute|stunde|tag|woche|monat|jahr)\w*/);
+  if (german) {
+    const amount = /^\d+$/.test(german[1]) ? Number(german[1]) : 1;
+    return amount * AGE_UNITS_MS[GERMAN_AGE_UNITS[german[2]]];
+  }
+
+  return null;
+}
+
+function extractUploadAgeText(item) {
+  const candidates = [
+    ...Array.from(item.querySelectorAll("#video-info span, #metadata-line span")).map((el) => el.textContent),
+    item.querySelector("#video-info")?.textContent,
+    item.querySelector("#metadata")?.textContent
+  ];
+
+  for (const text of candidates) {
+    if (parseUploadAge(text) !== null) return normalizeText(text);
+  }
+  return "";
+}
+
 function sendStatus(message, completed = false) {
   chrome.runtime.sendMessage({
     action: "UPDATE_STATUS",
@@ -73,7 +126,9 @@ function summarizePlan(plan) {
     movesRequired: plan.movesRequired,
     topMoves: plan.topMoves,
     bottomMoves: plan.bottomMoves,
-    zeroDurationCount: plan.zeroDurationCount
+    zeroDurationCount: plan.zeroDurationCount,
+    recentCount: plan.recentCount,
+    unknownDateCount: plan.unknownDateCount
   };
 }
 
@@ -126,6 +181,8 @@ function collectVideos() {
       const titleEl = item.querySelector("#video-title");
       const title = titleEl?.title || titleEl?.textContent?.trim() || "Unknown";
       const durationStr = extractDurationText(item);
+      const uploadAgeText = extractUploadAgeText(item);
+      const uploadAge = parseUploadAge(uploadAgeText);
       const videoId = getVideoIdFromHref(titleEl?.getAttribute("href") || titleEl?.href);
       const duplicateIndex = seenVideoIds.get(videoId) || 0;
       seenVideoIds.set(videoId, duplicateIndex + 1);
@@ -136,13 +193,29 @@ function collectVideos() {
         key: `${videoId}:${duplicateIndex}`,
         originalIndex: index,
         durationStr,
-        duration: parseDuration(durationStr)
+        duration: parseDuration(durationStr),
+        uploadAgeText,
+        uploadedAt: uploadAge === null ? null : Date.now() - uploadAge
       };
     })
     .filter((video) => video.videoId);
 }
 
-function buildTargetOrder(videos, sortType) {
+function isRecent(video, cutoff) {
+  return video.uploadedAt !== null && video.uploadedAt >= cutoff;
+}
+
+function buildTargetOrder(videos, sortType, cutoff) {
+  if (sortType === "recent") {
+    // Recent uploads go to the top (shortest first, newest first on ties);
+    // everything else keeps its current relative order below them.
+    const recentVideos = videos
+      .filter((video) => isRecent(video, cutoff))
+      .sort((a, b) => a.duration - b.duration || b.uploadedAt - a.uploadedAt);
+    const olderVideos = videos.filter((video) => !isRecent(video, cutoff));
+    return [...recentVideos, ...olderVideos];
+  }
+
   if (sortType !== "smart") {
     return [...videos].sort((a, b) => a.duration - b.duration);
   }
@@ -225,17 +298,19 @@ function isBetterBackbone(len, start, end, bestLen, bestStart, bestEnd, total) {
   return bottomMoves < bestBottomMoves;
 }
 
-function createSortPlan(sortType) {
+function createSortPlan(sortType, cutoff) {
   const videos = collectVideos();
   if (videos.length === 0) {
-    return { videos, sortedVideos: [], totalVideos: 0, maxLen: 0, bestStart: 0, bestEnd: -1, movesRequired: 0, topMoves: 0, bottomMoves: 0, zeroDurationCount: 0 };
+    return { videos, sortedVideos: [], totalVideos: 0, maxLen: 0, bestStart: 0, bestEnd: -1, movesRequired: 0, topMoves: 0, bottomMoves: 0, zeroDurationCount: 0, recentCount: 0, unknownDateCount: 0 };
   }
 
-  const sortedVideos = buildTargetOrder(videos, sortType);
+  const sortedVideos = buildTargetOrder(videos, sortType, cutoff);
   const { maxLen, bestStart, bestEnd } = findBackbone(videos, sortedVideos);
   const topMoves = bestStart;
   const bottomMoves = sortedVideos.length - bestEnd - 1;
   const zeroDurationCount = videos.filter((video) => video.duration === 0).length;
+  const recentCount = sortType === "recent" ? videos.filter((video) => isRecent(video, cutoff)).length : 0;
+  const unknownDateCount = videos.filter((video) => video.uploadedAt === null).length;
 
   return {
     videos,
@@ -247,7 +322,9 @@ function createSortPlan(sortType) {
     movesRequired: sortedVideos.length - maxLen,
     topMoves,
     bottomMoves,
-    zeroDurationCount
+    zeroDurationCount,
+    recentCount,
+    unknownDateCount
   };
 }
 
@@ -330,10 +407,10 @@ async function moveVideo(video, actionKey) {
   return true;
 }
 
-async function sortWatchLater(sortType) {
+async function sortWatchLater(sortType, cutoff) {
   sendStatus("Starting scrape...");
 
-  const plan = createSortPlan(sortType);
+  const plan = createSortPlan(sortType, cutoff);
   if (plan.videos.length === 0) {
     sendStatus("No videos found. Scroll down and retry.", true);
     return;
@@ -344,7 +421,14 @@ async function sortWatchLater(sortType) {
     sendStatus("Smart Sort: preserving the already sorted older block and merging new videos by duration.");
   }
 
-  if (plan.zeroDurationCount === plan.totalVideos) {
+  if (sortType === "recent" && plan.unknownDateCount === plan.totalVideos) {
+    sendStatus("Could not read upload dates. Scroll/reload the playlist and try again.", true);
+    return;
+  }
+
+  if (sortType === "recent") {
+    sendStatus(`Recent to Top: ${plan.recentCount} videos uploaded since ${new Date(cutoff).toLocaleString()}.`);
+  } else if (plan.zeroDurationCount === plan.totalVideos) {
     sendStatus("Could not read video durations. Scroll/reload the playlist and try again.", true);
     return;
   }
@@ -377,11 +461,11 @@ async function sortWatchLater(sortType) {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "SORT_WATCH_LATER") {
-    sortWatchLater(request.sortType);
+    sortWatchLater(request.sortType, request.cutoff);
     sendResponse({ status: "started" });
   }
   if (request.action === "ANALYZE_WATCH_LATER") {
-    const plan = createSortPlan(request.sortType);
+    const plan = createSortPlan(request.sortType, request.cutoff);
     sendResponse({ status: "ok", plan: summarizePlan(plan) });
   }
 });

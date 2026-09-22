@@ -48,6 +48,31 @@
       margin-bottom: 10px;
       line-height: 1.35;
     }
+    .age-filter {
+      margin-top: 14px;
+      padding-top: 10px;
+      border-top: 1px solid #444;
+      font-size: 12px;
+      color: #ddd;
+    }
+    .age-filter label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .age-filter input[type="number"],
+    .age-filter input[type="date"] {
+      background-color: #303030;
+      color: white;
+      border: 1px solid #555;
+      border-radius: 3px;
+      padding: 3px 5px;
+      color-scheme: dark;
+    }
+    .age-filter input[type="number"] {
+      width: 50px;
+    }
     #plan {
       margin-top: 12px;
       padding: 8px;
@@ -68,6 +93,18 @@
   </div>
   <button id="sortBtn">Strict Sort (All) &uarr;</button>
   <button id="smartSortBtn">Smart Sort (New Only) &uarr;</button>
+  <div class="age-filter">
+    Recent uploads to top (older videos stay in place):
+    <label>
+      <input type="radio" name="ageMode" value="days" checked>
+      Younger than <input type="number" id="ageDays" min="1" value="7"> days
+    </label>
+    <label>
+      <input type="radio" name="ageMode" value="date">
+      Uploaded since <input type="date" id="ageDate">
+    </label>
+    <button id="recentSortBtn">Recent to Top &uarr;</button>
+  </div>
   <div id="plan">Plan: open Watch Later to analyze moves.</div>
   <div id="status">Ready</div>
   <script src="popup.js"></script>

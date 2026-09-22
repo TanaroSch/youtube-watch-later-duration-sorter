@@ -1,8 +1,56 @@
+const DAY_MS = 24 * 60 * 60 * 1000;
+const AGE_SETTINGS_KEY = "wlSorterAgeFilter";
+
 function setSortingState(isSorting) {
-  const sortBtn = document.getElementById("sortBtn");
-  const smartSortBtn = document.getElementById("smartSortBtn");
-  if (sortBtn) sortBtn.disabled = isSorting;
-  if (smartSortBtn) smartSortBtn.disabled = isSorting;
+  for (const id of ["sortBtn", "smartSortBtn", "recentSortBtn"]) {
+    const button = document.getElementById(id);
+    if (button) button.disabled = isSorting;
+  }
+}
+
+function localDateString(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function readAgeSettings() {
+  return {
+    mode: document.querySelector("input[name='ageMode']:checked")?.value || "days",
+    days: Math.max(1, Number(document.getElementById("ageDays").value) || 7),
+    date: document.getElementById("ageDate").value
+  };
+}
+
+function loadAgeSettings() {
+  let saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem(AGE_SETTINGS_KEY)) || {};
+  } catch {
+    saved = {};
+  }
+
+  const mode = saved.mode === "date" ? "date" : "days";
+  document.querySelector(`input[name='ageMode'][value='${mode}']`).checked = true;
+  document.getElementById("ageDays").value = saved.days || 7;
+  document.getElementById("ageDate").value = saved.date || localDateString(new Date(Date.now() - 7 * DAY_MS));
+}
+
+function saveAgeSettings() {
+  try {
+    localStorage.setItem(AGE_SETTINGS_KEY, JSON.stringify(readAgeSettings()));
+  } catch {
+    // Settings are a convenience; sorting works without them.
+  }
+}
+
+// Upload timestamp (ms) a video must be at or after to count as recent.
+function recentCutoff() {
+  const { mode, days, date } = readAgeSettings();
+  if (mode === "date" && date) {
+    const [year, month, day] = date.split("-").map(Number);
+    return new Date(year, month - 1, day).getTime();
+  }
+  return Date.now() - days * DAY_MS;
 }
 
 function setStatus(message) {
@@ -16,11 +64,20 @@ function setPlan(plan, sortType) {
     return;
   }
 
-  const label = sortType === "smart" ? "Smart" : "Strict";
-  const warning = plan.zeroDurationCount === plan.totalVideos
+  const label = { smart: "Smart", recent: "Recent to Top" }[sortType] || "Strict";
+  let warning = plan.zeroDurationCount === plan.totalVideos
     ? " Durations were not detected; reload/scroll the playlist."
     : "";
-  el.innerText = `${label} fastest plan: ${plan.movesRequired} moves (${plan.topMoves} top, ${plan.bottomMoves} bottom). Keep ${plan.backboneSize}/${plan.totalVideos} in place.${warning}`;
+  let recentInfo = "";
+  if (sortType === "recent") {
+    recentInfo = ` ${plan.recentCount} recent videos.`;
+    warning = plan.unknownDateCount === plan.totalVideos
+      ? " Upload dates were not detected; reload/scroll the playlist."
+      : plan.unknownDateCount
+        ? ` ${plan.unknownDateCount} without readable upload date stay in place.`
+        : "";
+  }
+  el.innerText = `${label} fastest plan: ${plan.movesRequired} moves (${plan.topMoves} top, ${plan.bottomMoves} bottom). Keep ${plan.backboneSize}/${plan.totalVideos} in place.${recentInfo}${warning}`;
 }
 
 async function activeWatchLaterTab() {
@@ -60,7 +117,8 @@ async function analyze(sortType = "strict") {
   try {
     const response = await sendToContent(tab, {
       action: "ANALYZE_WATCH_LATER",
-      sortType
+      sortType,
+      cutoff: recentCutoff()
     });
     setPlan(response?.plan, sortType);
     setStatus("Ready");
@@ -84,7 +142,8 @@ async function initiateSort(sortType) {
   try {
     const response = await sendToContent(tab, {
       action: "SORT_WATCH_LATER",
-      sortType
+      sortType,
+      cutoff: recentCutoff()
     });
 
     if (!response) setStatus("Refresh the YouTube tab and try again.");
@@ -97,6 +156,14 @@ async function initiateSort(sortType) {
 
 document.getElementById("sortBtn").addEventListener("click", () => initiateSort("strict"));
 document.getElementById("smartSortBtn").addEventListener("click", () => initiateSort("smart"));
+document.getElementById("recentSortBtn").addEventListener("click", () => initiateSort("recent"));
+
+for (const el of document.querySelectorAll("input[name='ageMode'], #ageDays, #ageDate")) {
+  el.addEventListener("change", () => {
+    saveAgeSettings();
+    analyze("recent");
+  });
+}
 
 chrome.runtime.onMessage.addListener((request) => {
   if (request.action === "UPDATE_PLAN") {
@@ -108,10 +175,12 @@ chrome.runtime.onMessage.addListener((request) => {
     setStatus(request.message);
     if (request.completed) {
       setSortingState(false);
-      document.getElementById("sortBtn").innerText = "Strict Sort (All) &uarr;";
-      document.getElementById("smartSortBtn").innerText = "Smart Sort (New Only) &uarr;";
+      document.getElementById("sortBtn").innerText = "Strict Sort (All) \u2191";
+      document.getElementById("smartSortBtn").innerText = "Smart Sort (New Only) \u2191";
+      document.getElementById("recentSortBtn").innerText = "Recent to Top \u2191";
     }
   }
 });
 
+loadAgeSettings();
 analyze("strict");
