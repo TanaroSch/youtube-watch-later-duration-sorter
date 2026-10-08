@@ -69,6 +69,23 @@ const GERMAN_AGE_UNITS = {
   jahr: "year"
 };
 
+const COMPACT_AGE_UNITS = {
+  s: "second",
+  sek: "second",
+  m: "minute",
+  min: "minute",
+  h: "hour",
+  std: "hour",
+  d: "day",
+  t: "day",
+  w: "week",
+  wo: "week",
+  mo: "month",
+  mon: "month",
+  y: "year",
+  j: "year"
+};
+
 // Parses YouTube's relative upload date ("3 days ago", "vor 3 Tagen") into an
 // age in milliseconds. Returns null when no upload date is recognizable.
 function parseUploadAge(text) {
@@ -84,6 +101,18 @@ function parseUploadAge(text) {
   if (german) {
     const amount = /^\d+$/.test(german[1]) ? Number(german[1]) : 1;
     return amount * AGE_UNITS_MS[GERMAN_AGE_UNITS[german[2]]];
+  }
+
+  // Compact labels YouTube uses since autumn 2026: "2w ago", "3d ago", "1mo ago".
+  const englishShort = value.match(/\b(\d+)\s?(s|min|m|h|d|w|mo|y)\s+ago\b/);
+  if (englishShort) {
+    return Number(englishShort[1]) * AGE_UNITS_MS[COMPACT_AGE_UNITS[englishShort[2]]];
+  }
+
+  // German counterpart, assumed shape: "vor 2 Wo.", "vor 3 T.", "vor 5 Std.".
+  const germanShort = value.match(/\bvor\s+(\d+)\s?(sek|min|std|t|wo|mon|j)\b/);
+  if (germanShort) {
+    return Number(germanShort[1]) * AGE_UNITS_MS[COMPACT_AGE_UNITS[germanShort[2]]];
   }
 
   return null;
